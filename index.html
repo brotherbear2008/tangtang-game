@@ -1,0 +1,413 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>航天基地爆破战</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=ZCOOL+QingKe+HuangYou&display=swap">
+<style>
+/* 布局：全屏战场画布在底层，菜单 / 商店 / 计分板是浮在上面的缺角控制台面板 */
+:root {
+  color-scheme: dark;
+  --void: #05080d;
+  --bg: #0a0f17;
+  --panel: rgba(11, 17, 27, 0.92);
+  --panel-solid: #0d1420;
+  --raise: #131c2b;
+  --line: #24324a;
+  --line-strong: #3a5076;
+  --fg: #e7eef8;
+  --muted: #8b98ae;
+  --dim: #5f6c82;
+  --ally: #3fd8c8;
+  --enemy: #ff5e5b;
+  --spike: #ffc93c;
+  --warn: #ffb03b;
+  --f-display: "ZCOOL QingKe HuangYou", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --f-ui: "Chakra Petch", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --notch: 14px;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--void); color: var(--fg);
+  font: 14px/1.6 var(--f-ui); overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+body.playing #game { cursor: none; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--spike); outline-offset: 2px; }
+
+.overlay {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; overflow: auto;
+}
+.overlay.dim { background: rgba(4, 7, 12, 0.72); backdrop-filter: blur(3px); }
+.cut { clip-path: polygon(0 0, calc(100% - var(--notch)) 0, 100% var(--notch), 100% 100%, var(--notch) 100%, 0 calc(100% - var(--notch))); }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.16em; color: var(--muted); }
+kbd {
+  display: inline-block; min-width: 26px; padding: 1px 7px; text-align: center;
+  font: 600 12px/1.6 var(--f-ui); color: var(--fg);
+  background: var(--raise); border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px;
+}
+
+/* ---------- 菜单 ---------- */
+#menu {
+  align-items: flex-start;
+  background: linear-gradient(100deg, rgba(5, 8, 13, 0.96) 0%, rgba(5, 8, 13, 0.86) 48%, rgba(5, 8, 13, 0.55) 100%);
+}
+.menu-wrap {
+  width: min(1200px, 100%); margin: auto;
+  display: grid; grid-template-columns: minmax(0, 400px) minmax(0, 1fr); gap: 32px; align-items: start;
+  padding-block: 24px;
+}
+@media (max-width: 900px) { .menu-wrap { grid-template-columns: minmax(0, 1fr); } }
+.brief { display: flex; flex-direction: column; gap: 22px; }
+.brief h1 {
+  margin: 0; font-family: var(--f-display); font-weight: 400;
+  font-size: clamp(52px, 8vw, 88px); line-height: 0.95; letter-spacing: 0.02em;
+  text-wrap: balance;
+}
+.brief h1 .hl { color: var(--spike); }
+.lede { margin: 0; color: #c5cfdf; max-width: 36em; }
+.lede b { color: var(--fg); }
+
+.xpcard { background: var(--panel); border: 1px solid var(--line); padding: 16px 18px; display: grid; gap: 12px; }
+.xpcard-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.xpcard-head strong { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+.xpcard-head small { color: var(--muted); }
+#menuStage { font-weight: 700; }
+.stage-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+.stage-track li { display: grid; gap: 2px; padding-top: 8px; border-top: 3px solid rgba(255, 255, 255, 0.08); font-size: 11px; color: var(--dim); min-width: 0; }
+.stage-track li.on { border-top-color: var(--tier); color: var(--fg); }
+.stage-track li b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-track li span { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+.opts { display: grid; gap: 12px; }
+.opt { display: grid; grid-template-columns: 88px minmax(0, 1fr); align-items: center; gap: 12px; }
+.opt > span { color: var(--muted); font-size: 13px; }
+.seg { display: flex; border: 1px solid var(--line-strong); }
+.seg button {
+  flex: 1; padding: 9px 10px; background: transparent; border: 0; cursor: pointer; color: var(--muted);
+  font-weight: 600; transition: background 0.15s, color 0.15s;
+}
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--void); }
+.actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.primary {
+  padding: 16px 36px; border: 0; cursor: pointer;
+  background: var(--spike); color: #1d1503; font-weight: 700; font-size: 18px; letter-spacing: 0.08em;
+  transition: transform 0.12s, filter 0.12s;
+}
+.primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.ghost { background: none; border: 0; padding: 6px 0; color: var(--muted); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; font-size: 13px; }
+.ghost:hover { color: var(--fg); }
+.touch-note { margin: 0; padding: 10px 14px; border: 1px solid var(--warn); color: var(--warn); font-size: 13px; }
+
+.info { background: var(--panel); border: 1px solid var(--line); min-width: 0; display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+.tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; flex-shrink: 0; }
+.tabs button {
+  padding: 14px 20px; background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  color: var(--muted); cursor: pointer; font-weight: 600; white-space: nowrap;
+}
+.tabs button:hover { color: var(--fg); }
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--spike); }
+.tab { padding: 20px 22px 24px; overflow: auto; min-height: 0; }
+.tab h3 { margin: 22px 0 10px; font-size: 15px; font-weight: 700; letter-spacing: 0.04em; }
+.tab h3:first-child { margin-top: 0; }
+.tab p, .tab li { color: #c5cfdf; }
+.tab ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.tag {
+  display: inline-block; margin-right: 6px; padding: 0 6px; font-size: 11px; font-weight: 700; line-height: 18px;
+  vertical-align: 1px; color: var(--void);
+}
+.tag.mod { background: var(--spike); }
+.tag.new { background: var(--ally); }
+.keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: 10px 20px; margin: 0; }
+.keys div { display: flex; align-items: center; gap: 10px; color: #c5cfdf; }
+.keys dt { flex-shrink: 0; display: flex; gap: 4px; }
+.keys dd { margin: 0; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--line-strong); white-space: nowrap; }
+td { padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td small { margin-left: 6px; color: var(--muted); font-size: 11px; }
+td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 140px; }
+.map-figure { margin: 0; display: grid; gap: 10px; }
+.map-figure canvas { width: 100%; height: auto; max-width: 100%; border: 1px solid var(--line); display: block; }
+.map-figure figcaption { color: var(--muted); font-size: 12px; }
+
+/* ---------- 商店 ---------- */
+#shop { align-items: flex-start; padding-top: 100px; padding-bottom: 146px; pointer-events: none; }
+.shop-panel {
+  pointer-events: auto; width: min(1080px, 100%); max-height: 100%; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line-strong); padding: 14px 16px 16px;
+  display: grid; gap: 12px;
+}
+.shop-head { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.shop-head h2 { margin: 0; font-family: var(--f-display); font-weight: 400; font-size: 28px; line-height: 1; }
+.shop-head .stat { display: flex; gap: 6px; align-items: baseline; color: var(--muted); font-size: 13px; }
+.shop-head .stat b { color: var(--fg); font-size: 16px; font-variant-numeric: tabular-nums; }
+.shop-head .stat.money b { color: var(--spike); font-size: 20px; }
+#shopTimer { color: var(--ally); font-weight: 600; }
+#shopClose { margin-left: auto; padding: 6px 12px; background: none; border: 1px solid var(--line-strong); color: var(--muted); cursor: pointer; }
+#shopClose:hover { color: var(--fg); border-color: var(--fg); }
+.shop-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 760px) { .shop-grid { grid-template-columns: minmax(0, 1fr); } }
+.shop-col h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; color: var(--muted); }
+.shop-col h3 + .items + h3 { margin-top: 14px; }
+.items { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 170px), 1fr)); gap: 6px; }
+.items.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.item {
+  display: grid; gap: 2px; text-align: left; padding: 8px 10px 7px; cursor: pointer;
+  background: var(--raise); border: 1px solid var(--line); border-left: 3px solid var(--tier);
+  transition: background 0.12s, border-color 0.12s;
+}
+.item:hover:not(:disabled) { background: #1a2538; border-color: var(--line-strong); border-left-color: var(--tier); }
+.item:disabled { cursor: default; }
+.item.locked { opacity: 0.45; }
+.item.owned { background: rgba(63, 216, 200, 0.08); }
+.item-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.item-name { font-weight: 700; font-size: 14px; }
+.price { color: var(--spike); font-weight: 700; font-variant-numeric: tabular-nums; }
+.why { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.item.owned .why { color: var(--ally); }
+.why.lock { color: var(--warn); }
+.item-meta { font-size: 11.5px; color: #aab5c7; line-height: 1.45; }
+.item-tier { font-size: 11px; color: var(--tier); font-weight: 600; }
+
+/* ---------- 计分板 ---------- */
+#board { background: rgba(4, 7, 12, 0.55); pointer-events: none; }
+.board-panel { width: min(1080px, 100%); background: var(--panel); border: 1px solid var(--line-strong); padding: 18px; display: grid; gap: 18px; }
+#boardBody { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+@media (max-width: 860px) { #boardBody { grid-template-columns: minmax(0, 1fr); } }
+.board-team h3 { margin: 0 0 6px; font-size: 14px; display: flex; justify-content: space-between; }
+.board-team.ally h3 { color: var(--ally); }
+.board-team.enemy h3 { color: var(--enemy); }
+.board-team h3 b { font-size: 20px; }
+.board-team tr.me td { color: var(--spike); font-weight: 700; }
+.board-team tr.dead td { color: var(--dim); }
+.dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; background: var(--tier); }
+
+/* ---------- 暂停 / 结算 ---------- */
+.modal { width: min(460px, 100%); background: var(--panel-solid); border: 1px solid var(--line-strong); padding: 28px; display: grid; gap: 18px; text-align: center; }
+.modal h2 { margin: 0; font-family: var(--f-display); font-weight: 400; font-size: 52px; line-height: 1; }
+.modal .score { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+.modal dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.modal dl div { background: var(--raise); padding: 10px; }
+.modal dt { font-size: 12px; color: var(--muted); }
+.modal dd { margin: 0; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.modal p { margin: 0; color: var(--muted); }
+.modal .actions { justify-content: center; }
+.modal .secondary { padding: 14px 24px; background: none; border: 1px solid var(--line-strong); color: var(--fg); cursor: pointer; font-weight: 600; }
+.modal .secondary:hover { border-color: var(--fg); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<canvas id="game" aria-label="游戏画面"></canvas>
+
+<div id="menu" class="overlay">
+  <div class="menu-wrap">
+    <section class="brief" aria-labelledby="gameTitle">
+      <div class="eyebrow">自制射击游戏 · 12V12 爆破模式</div>
+      <h1 id="gameTitle">航天基地<br><span class="hl">爆破战</span></h1>
+      <p class="lede">进攻方把炸弹送进 <b>H4 黑室（A 包点）</b>安放，防守方阻止安放或在引爆前拆除。每局 45 秒，<b>9 局 5 胜</b>。</p>
+
+      <div class="xpcard cut">
+        <div class="xpcard-head">
+          <div><div class="eyebrow">永久经验</div><strong id="menuXP">0</strong></div>
+          <div style="text-align:right"><div id="menuStage">新兵</div><small id="menuNext"></small></div>
+        </div>
+        <ol class="stage-track" id="stageTrack"></ol>
+      </div>
+
+      <div class="opts">
+        <div class="opt"><span>你的阵营</span>
+          <div class="seg" id="optSide" role="group" aria-label="阵营">
+            <button type="button" data-v="ATT" aria-pressed="true">进攻方</button>
+            <button type="button" data-v="DEF" aria-pressed="false">防守方</button>
+          </div>
+        </div>
+        <div class="opt"><span>机器人难度</span>
+          <div class="seg" id="optDiff" role="group" aria-label="难度">
+            <button type="button" data-v="easy" aria-pressed="false">简单</button>
+            <button type="button" data-v="normal" aria-pressed="true">普通</button>
+            <button type="button" data-v="hard" aria-pressed="false">困难</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="touch-note" id="touchNote" hidden>这个游戏需要键盘和鼠标，请在电脑上打开。</p>
+      <div class="actions">
+        <button type="button" class="primary cut" id="btnStart">开始比赛</button>
+        <button type="button" class="ghost" id="btnResetXP">清空经验</button>
+      </div>
+    </section>
+
+    <section class="info cut" aria-label="说明">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" data-tab="controls" aria-selected="true">操作</button>
+        <button type="button" role="tab" data-tab="rules" aria-selected="false">规则（修订版）</button>
+        <button type="button" role="tab" data-tab="weapons" aria-selected="false">武器与装备</button>
+        <button type="button" role="tab" data-tab="map" aria-selected="false">地图</button>
+      </div>
+
+      <div class="tab" data-tab="controls">
+        <dl class="keys">
+          <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>移动</dd></div>
+          <div><dt><kbd>鼠标</kbd></dt><dd>瞄准，左键射击</dd></div>
+          <div><dt><kbd>右键</kbd></dt><dd>狙击枪开镜</dd></div>
+          <div><dt><kbd>Shift</kbd></dt><dd>静步：慢但更准</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>换弹</dd></div>
+          <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>切换背包里的武器</dd></div>
+          <div><dt><kbd>Q</kbd></dt><dd>切回上一把</dd></div>
+          <div><dt><kbd>E</kbd></dt><dd>按住：安放 / 拆除炸弹</dd></div>
+          <div><dt><kbd>G</kbd></dt><dd>朝准星扔手雷</dd></div>
+          <div><dt><kbd>C</kbd></dt><dd>朝准星扔烟雾弹</dd></div>
+          <div><dt><kbd>B</kbd></dt><dd>购买阶段打开商店</dd></div>
+          <div><dt><kbd>X</kbd></dt><dd>丢下炸弹给队友</dd></div>
+          <div><dt><kbd>Tab</kbd></dt><dd>按住看计分板</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>暂停</dd></div>
+          <div><dt><kbd>M</kbd></dt><dd>静音</dd></div>
+          <div><dt><kbd>空格</kbd></dt><dd>阵亡后切换观战队友</dd></div>
+        </dl>
+        <h3>上手提示</h3>
+        <ul>
+          <li>敌人只有在你视线里才会显示，墙后面是暗的。</li>
+          <li>人物中间深色的小圆是头。准星中心变黄时（站定或静步、没在连射）打中它就是爆头，伤害翻倍。</li>
+          <li>站定点射最准，跑动和连射都会让准星张开。</li>
+          <li>击杀敌人后，他背包里的武器会掉在地上，走过去自动缴获。</li>
+          <li>经验永久保存在这个浏览器里，打得越多解锁越多。</li>
+        </ul>
+      </div>
+
+      <div class="tab" data-tab="rules" hidden>
+        <p><span class="tag mod">改</span>表示修改了原规则，<span class="tag new">新</span>表示新增机制。数值都在 <code>js/config.js</code> 里，改了刷新就生效。</p>
+        <h3>一、对局</h3>
+        <ul>
+          <li><span class="tag mod">改</span>12V12，<b>9 局 5 胜</b>。原来的 7 局 5 胜会出现打满 7 局还是 4:3、谁都到不了 5 分的情况。</li>
+          <li><span class="tag new">新</span>第 4 局结束后半场换边，金钱重置为 800、背包清空。</li>
+          <li><span class="tag new">新</span>每局开头 10 秒购买阶段，只能在出生点活动。</li>
+          <li>战斗 45 秒。进攻方胜：炸弹引爆，或全歼防守方。防守方胜：拆掉炸弹、在安放前全歼进攻方，或时间耗尽炸弹没安放。</li>
+          <li><span class="tag mod">改</span>炸弹安放后改为独立的 <b>20 秒</b>引爆倒计时。原规则跟着 45 秒走，最后 5 秒内安放的炸弹根本拆不掉。</li>
+          <li><span class="tag new">新</span>炸弹安放后进攻方就算全灭，防守方也必须拆弹。引爆时 340 范围内的人全部阵亡。</li>
+          <li>安放 / 拆除都要按住 E 读条 5 秒，读条时不能移动、射击，松开就清零。</li>
+          <li><span class="tag new">新</span>携带者阵亡后炸弹掉在原地，进攻方走过去就能捡起。</li>
+        </ul>
+        <h3>二、经济与经验</h3>
+        <ul>
+          <li><span class="tag mod">改</span>金钱跨局累积：首局 800，胜 +3000，负 +1900，击杀 +200，安放 / 拆除 +300，上限 9000。原规则每局重置 800，连最便宜的 1500 护甲都买不起。</li>
+          <li><span class="tag mod">改</span>经验永久保存：胜 +800，负 +380，击杀 +100，安放 / 拆除 +100。原来胜一局 +4000，打两局全部解锁，阶段门槛没有意义。</li>
+          <li><span class="tag mod">改</span>给所有武器补上了售价（原规则只有护甲有价格）。</li>
+          <li>护甲、头盔每局清零，需要重买。活下来的人保留背包武器和没用的投掷物，阵亡者只剩 Classic。</li>
+        </ul>
+        <h3>三、战斗</h3>
+        <ul>
+          <li><span class="tag new">新</span><b>爆头</b>：子弹穿过人物中心的头部圆，并且开枪时准星是收拢的（站着或静步、没在连射扩散），算爆头，伤害 ×2。准星中心变黄就是可以爆头。头盔只挡爆头，护甲只挡身体。</li>
+          <li><span class="tag mod">改</span><b>子弹等级</b>原来没有实际作用，现在是破甲系数：打在护甲上时，普通弹 ×0.75、三级弹 ×1.0、四级弹 ×1.5。</li>
+          <li><span class="tag new">新</span><b>移速</b>：基础 215，按武器重量 78%–100%；Shift 静步 ×0.5；狙击开镜 ×0.6。</li>
+          <li><span class="tag new">新</span><b>换弹</b>：弹药拆成弹匣 + 备弹，总量不变；R 换弹，打空自动换。</li>
+          <li><span class="tag new">新</span><b>散布</b>：跑动、连射都会扩散，站定点射最准；狙击不开镜很不准。</li>
+          <li><span class="tag new">新</span><b>手雷</b> 300：1.6 秒引爆，半径 170，最高 110 伤害，被墙挡住。<b>烟雾弹</b> 200：持续 10 秒，挡视线不挡子弹。没有友军伤害。</li>
+          <li><span class="tag mod">改</span><b>平衡</b>：G18 射速 1182 → 600（原来每秒伤害 512，比阶段 4 的 M7 还高）；UZI 200 → 450（原来只比免费的 Classic 强一点）；UMP45 211 → 400、野牛 211 → 380（原来比阶段 2 的 M249 还弱）。</li>
+          <li>AWM 命中直接秒杀，无视任何护甲；开枪后在射速冷却之外再加 1 秒拉栓。</li>
+          <li>墙体挡子弹、挡移动。击杀 +250 经验改为 +100（见经验部分）。</li>
+        </ul>
+      </div>
+
+      <div class="tab" data-tab="weapons" hidden>
+        <div class="tablewrap"><table id="weaponTable"></table></div>
+        <h3>护甲与头盔</h3>
+        <div class="tablewrap"><table id="gearTable"></table></div>
+        <h3>伤害怎么算</h3>
+        <ul>
+          <li>身体中弹先扣护甲，爆头先扣头盔。对护甲的伤害 = 伤害 × 破甲系数，护甲打光后剩下的伤害扣血。</li>
+          <li>例：M7（四级弹）打满金色护甲的敌人：第一枪 71×1.5 = 106 打穿 60 护甲，剩余折算 31 扣血；两枪身体或一枪爆头就能击杀。</li>
+        </ul>
+      </div>
+
+      <div class="tab" data-tab="map" hidden>
+        <figure class="map-figure">
+          <canvas id="mapSchematic" width="1200" height="720"></canvas>
+          <figcaption>左侧宿舍区是进攻方出生点，右侧发射区是防守方出生点。只有 H4 黑室的黄色区域可以安放炸弹。</figcaption>
+        </figure>
+        <h3>进攻路线</h3>
+        <ul>
+          <li><b>北路</b>：宿舍区 → 外围野区（北）→ A 大门。</li>
+          <li><b>H2 小道</b>：宿舍区 → H2 浮力室 → A 小道。</li>
+          <li><b>中路</b>：宿舍区 → 中控桥 → 总裁室 → A 短门。</li>
+          <li><b>南绕</b>：外围野区（南）→ H1 蓝室 → 总裁室 → A 短门，最远但最少人守。</li>
+        </ul>
+        <h3>四组墙体</h3>
+        <ul>
+          <li>墙组①：宿舍区与外围隔墙、H2 浮力水箱。</li>
+          <li>墙组②：中控桥护栏、总裁室、发射区火箭与物资箱。</li>
+          <li>墙组③：H4 黑室（A 包点）围墙与掩体。</li>
+          <li>墙组④：H1 蓝室（B 包点）、H3 离心机。</li>
+        </ul>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div id="shop" class="overlay" hidden>
+  <div class="shop-panel cut" role="dialog" aria-label="商店">
+    <div class="shop-head">
+      <h2>商店</h2>
+      <span id="shopTimer"></span>
+      <span class="stat money">金钱 <b id="shopMoney">0</b></span>
+      <span class="stat">经验 <b id="shopXP">0</b></span>
+      <button type="button" id="shopClose">关闭（B）</button>
+    </div>
+    <div class="shop-grid">
+      <div class="shop-col">
+        <h3>武器</h3>
+        <div class="items" id="shopWeapons"></div>
+      </div>
+      <div class="shop-col">
+        <h3>护甲 · 头盔</h3>
+        <div class="items two" id="shopArmor"></div>
+        <h3>投掷物</h3>
+        <div class="items two" id="shopUtil"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="board" class="overlay" hidden>
+  <div class="board-panel cut" id="boardBody"></div>
+</div>
+
+<div id="pause" class="overlay dim" hidden>
+  <div class="modal cut">
+    <h2>已暂停</h2>
+    <div class="actions">
+      <button type="button" class="primary cut" id="btnResume">继续</button>
+      <button type="button" class="secondary" id="btnQuit">退出到主菜单</button>
+    </div>
+  </div>
+</div>
+
+<div id="over" class="overlay dim" hidden>
+  <div class="modal cut">
+    <div class="eyebrow">比赛结束</div>
+    <h2 id="overTitle">比赛胜利</h2>
+    <div class="score" id="overScore">5 : 3</div>
+    <dl id="overStats"></dl>
+    <p id="overNext"></p>
+    <div class="actions">
+      <button type="button" class="primary cut" id="btnAgain">再来一场</button>
+      <button type="button" class="secondary" id="btnOverMenu">主菜单</button>
+    </div>
+  </div>
+</div>
+
+<script charset="utf-8" src="js/config.js"></script>
+<script charset="utf-8" src="js/engine.js"></script>
+<script charset="utf-8" src="js/ai.js"></script>
+<script charset="utf-8" src="js/render.js"></script>
+<script charset="utf-8" src="js/main.js"></script>
