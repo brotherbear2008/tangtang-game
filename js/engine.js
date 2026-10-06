@@ -30,15 +30,19 @@ function shuffle(arr) {
 /* ---------- 地图网格 ---------- */
 const grid = new Uint8Array(MW * MH);       // 0 地面，1-4 墙组，9 边界
 const nearWall = new Uint8Array(MW * MH);
+const wallH = new Float32Array(MW * MH);    // 3D：每格墙的高度（像素）
 function solidAt(tx, ty) { return tx < 0 || ty < 0 || tx >= MW || ty >= MH || grid[ty * MW + tx] !== 0; }
 function solidPx(x, y) { return solidAt(tileOf(x), tileOf(y)); }
 function buildGrid() {
   grid.fill(0);
+  wallH.fill(VIEW3D.WALL_H / VIEW3D.S);
   for (let x = 0; x < MW; x++) { grid[x] = 9; grid[(MH - 1) * MW + x] = 9; }
   for (let y = 0; y < MH; y++) { grid[y * MW] = 9; grid[y * MW + MW - 1] = 9; }
+  const heightOf = { crate: VIEW3D.CRATE_H, round: 3.8, rocket: 22 };
   WALL_GROUPS.forEach((g, gi) => g.rects.forEach(r => {
     const [x, y, w, h] = rectOf(r);
-    for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) grid[j * MW + i] = gi + 1;
+    const hh = (heightOf[r.shape] || VIEW3D.WALL_H) / VIEW3D.S;
+    for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) { grid[j * MW + i] = gi + 1; wallH[j * MW + i] = hh; }
   }));
   for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
     nearWall[y * MW + x] = solidAt(x + 1, y) || solidAt(x - 1, y) || solidAt(x, y + 1) || solidAt(x, y - 1) ? 1 : 0;
@@ -204,7 +208,7 @@ function addMoney(a, n) { a.money = Math.min(CFG.MONEY_CAP, a.money + n); }
 
 /* ---------- 游戏状态 ---------- */
 const G = {
-  state: 'menu', phase: 'idle', paused: false,
+  state: 'menu', phase: 'idle', paused: false, mode: '2d',
   time: 0, timer: 0, round: 0, score: [0, 0], side: ['ATT', 'DEF'],
   agents: [], player: null, spike: null,
   drops: [], nades: [], smokes: [], tracers: [], fx: [], floats: [], feed: [], hurt: [],
@@ -218,7 +222,7 @@ function newWeapon(id) { const d = WEAPONS[id]; return { id, mag: d.mag, reserve
 function makeAgent(team, name, isPlayer) {
   return {
     id: nextId++, team, name, isPlayer,
-    x: 0, y: 0, angle: 0, speedNow: 0, walking: false, scoped: false,
+    x: 0, y: 0, angle: 0, pitch: 0, speedNow: 0, walking: false, scoped: false, shotT: -9, markT: -9,
     hp: CFG.HP, alive: true, armor: 0, armorMax: 0, armorStage: 0, helmet: 0, helmetMax: 0, helmetStage: 0,
     weapons: [newWeapon('classic')], cur: 0, last: 0,
     reloadT: 0, fireCD: 0, switchT: 0, bloom: 0,
@@ -282,7 +286,7 @@ function startRound(resetAll) {
     Object.assign(a, {
       alive: true, hp: CFG.HP, armor: 0, armorMax: 0, armorStage: 0, helmet: 0, helmetMax: 0, helmetStage: 0,
       reloadT: 0, fireCD: 0, switchT: 0, bloom: 0, action: null, plantProg: 0, defuseProg: 0,
-      scoped: false, walking: false, speedNow: 0, hurtT: -9, spotted: [0, 0], roundKills: 0,
+      scoped: false, walking: false, speedNow: 0, hurtT: -9, spotted: [0, 0], roundKills: 0, pitch: 0, markT: -9,
     });
   }
   placeSpawns();
@@ -297,7 +301,7 @@ function startRound(resetAll) {
     color: PALETTE.fg, t: 0, life: 3,
   };
   if (carrier.isPlayer) notify('炸弹在你身上 · 去 A 包点按住 E 安放');
-  openShop();
+  openShop(true);
 }
 
 function placeSpawns() {
@@ -373,11 +377,9 @@ function matchOver() {
   showOver(G.score[0] > G.score[1]);
 }
 
-/* ---------- 商店 ---------- */
+/* ---------- 商店：经验达标后按套装购买（枪 + 头盔 + 护甲），投掷物单买 ---------- */
 function itemDef(kind, id) {
-  if (kind === 'weapon') return WEAPONS[id];
-  if (kind === 'armor') return ARMORS.find(x => x.id === id);
-  if (kind === 'helmet') return HELMETS.find(x => x.id === id);
+  if (kind === 'kit') return KITS.find(k => k.id === id);
   if (kind === 'frag') return { name: '手雷', price: CFG.FRAG.price, stage: 0 };
   if (kind === 'smoke') return { name: '烟雾弹', price: CFG.SMOKE.price, stage: 0 };
   return null;
@@ -386,9 +388,8 @@ function buyCheck(a, kind, id) {
   const it = itemDef(kind, id);
   if (!it) return { ok: false, why: '没有这件装备' };
   if (stageOf(a.xp) < it.stage) return { ok: false, why: `需要 ${STAGES[it.stage].xp} 经验`, locked: true };
-  if (kind === 'weapon' && a.weapons.some(w => w.id === id)) return { ok: false, why: '已拥有', owned: true };
-  if (kind === 'armor' && a.armorMax >= it.value) return { ok: false, why: a.armorMax === it.value ? '已装备' : '已有更好的', owned: true };
-  if (kind === 'helmet' && a.helmetMax >= it.value) return { ok: false, why: a.helmetMax === it.value ? '已装备' : '已有更好的', owned: true };
+  if (kind === 'kit' && it.weapons.every(w => a.weapons.some(x => x.id === w))
+    && a.armorMax >= kitArmor(it).value && a.helmetMax >= kitHelmet(it).value) return { ok: false, why: '已装备', owned: true };
   if ((kind === 'frag' || kind === 'smoke') && a.nades[kind] >= CFG[kind === 'frag' ? 'FRAG' : 'SMOKE'].max) return { ok: false, why: '已带满', owned: true };
   if (G.phase !== 'buy') return { ok: false, why: '只能在购买阶段买' };
   if (a.money < it.price) return { ok: false, why: '金钱不足' };
@@ -398,10 +399,17 @@ function buy(a, kind, id) {
   if (!buyCheck(a, kind, id).ok) return false;
   const it = itemDef(kind, id);
   a.money -= it.price;
-  if (kind === 'weapon') { a.weapons.push(newWeapon(id)); switchWeapon(a, a.weapons.length - 1, true); }
-  else if (kind === 'armor') { a.armor = a.armorMax = it.value; a.armorStage = it.stage; }
-  else if (kind === 'helmet') { a.helmet = a.helmetMax = it.value; a.helmetStage = it.stage; }
-  else a.nades[kind]++;
+  if (kind === 'kit') {
+    // 套装里的枪：没有就放进背包，已经有了就补满弹药；头盔护甲只会往高级换
+    for (const wid of it.weapons) {
+      const own = a.weapons.find(w => w.id === wid);
+      if (own) { own.mag = WEAPONS[wid].mag; own.reserve = WEAPONS[wid].reserve; }
+      else a.weapons.push(newWeapon(wid));
+    }
+    switchWeapon(a, a.weapons.findIndex(w => w.id === it.main), true);
+    if (kitArmor(it).value > a.armorMax) { a.armor = a.armorMax = kitArmor(it).value; a.armorStage = it.stage; }
+    if (kitHelmet(it).value > a.helmetMax) { a.helmet = a.helmetMax = kitHelmet(it).value; a.helmetStage = it.stage; }
+  } else a.nades[kind]++;
   return true;
 }
 
@@ -436,19 +444,26 @@ function fire(a) {
   if (w.mag <= 0) { if (w.reserve > 0) startReload(a); else if (a.isPlayer) SFX.dry(); return false; }
   w.mag--;
   a.fireCD = 60 / d.rpm + (d.bolt || 0);
+  a.shotT = G.time;
   const sp = spreadOf(a) * Math.PI / 180;
-  const precise = canHeadshot(a);
-  const ang = a.angle + gauss() * sp * 0.5;
+  let res;
+  if (G.mode === '3d') {
+    // 3D：子弹落在一个散布圆锥里，打头还是打身体由瞄的位置决定
+    res = hitscan3(a, a.angle + gauss() * sp * 0.5, a.pitch + gauss() * sp * 0.5, d.range);
+  } else {
+    const precise = canHeadshot(a);
+    res = hitscan(a, a.angle + gauss() * sp * 0.5, d.range);
+    if (!precise) res.head = false;
+  }
   a.bloom = Math.min(d.bloomMax, a.bloom + d.bloom);
-  const res = hitscan(a, ang, d.range);
-  if (!precise) res.head = false;
+  const gunH = VIEW3D.GUN_H / VIEW3D.S;
   const mx = a.x + Math.cos(a.angle) * (R + d.len - 4), my = a.y + Math.sin(a.angle) * (R + d.len - 4);
-  G.tracers.push({ x1: mx, y1: my, x2: res.x, y2: res.y, t: 0, life: d.sniper ? 0.32 : 0.08, w: d.sniper ? 2.4 : 1.3, team: a.team });
-  G.fx.push({ type: 'flash', x: mx, y: my, a: a.angle, t: 0, life: 0.05 });
-  if (!res.hit) G.fx.push({ type: 'spark', x: res.x, y: res.y, t: 0, life: 0.18 });
+  G.tracers.push({ x1: mx, y1: my, h1: gunH, x2: res.x, y2: res.y, h2: res.h ?? gunH, t: 0, life: d.sniper ? 0.32 : 0.08, w: d.sniper ? 2.4 : 1.3, team: a.team, own: a.isPlayer });
+  G.fx.push({ type: 'flash', x: mx, y: my, h: gunH, a: a.angle, t: 0, life: 0.05, own: a.isPlayer });
+  if (!res.hit) G.fx.push({ type: 'spark', x: res.x, y: res.y, h: res.h ?? gunH, t: 0, life: 0.18 });
   SFX.shot(a, d);
   alertHearing(a);
-  if (res.hit) applyHit(a, res.hit, res.head, w.id);
+  if (res.hit) applyHit(a, res.hit, res.head, w.id, res);
   if (w.mag === 0 && w.reserve > 0) startReload(a);
   return true;
 }
@@ -469,6 +484,68 @@ function hitscan(a, ang, range) {
   return { hit: best, head: !!best && bestPerp < R * CFG.HEAD_RATIO, x: ox + dx * bestT, y: oy + dy * bestT };
 }
 
+/* 3D 命中：头是球，身体是圆柱；墙按各自高度挡子弹（掩体矮，墙高），地面也会挡 */
+function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
+  const lx = ox - cx, ly = oy - cy, lz = oz - cz;
+  const b = lx * dx + ly * dy + lz * dz, c = lx * lx + ly * ly + lz * lz - r * r, disc = b * b - c;
+  if (disc < 0) return -1;
+  const sq = Math.sqrt(disc);
+  return -b - sq >= 0 ? -b - sq : -b + sq >= 0 ? 0 : -1;
+}
+function rayCylinder(ox, oy, oz, dx, dy, dz, cx, cy, r, top) {
+  const ax = ox - cx, ay = oy - cy, A = dx * dx + dy * dy;
+  if (A < 1e-9) return -1;
+  const B = 2 * (ax * dx + ay * dy), C = ax * ax + ay * ay - r * r, disc = B * B - 4 * A * C;
+  if (disc < 0) return -1;
+  const sq = Math.sqrt(disc);
+  let lo = -Infinity, hi = Infinity;
+  if (Math.abs(dz) < 1e-9) { if (oz < 0 || oz > top) return -1; }
+  else { const t0 = -oz / dz, t1 = (top - oz) / dz; lo = Math.min(t0, t1); hi = Math.max(t0, t1); }
+  const enter = Math.max((-B - sq) / (2 * A), lo, 0), exit = Math.min((-B + sq) / (2 * A), hi);
+  return enter <= exit ? enter : -1;
+}
+function hitscan3(a, yaw, pitch, range) {
+  const S = VIEW3D.S, cp = Math.cos(pitch);
+  const hx = Math.cos(yaw), hy = Math.sin(yaw);
+  const dx = hx * cp, dy = hy * cp, dz = Math.sin(pitch);
+  const ox = a.x, oy = a.y, oz = VIEW3D.EYE / S;
+  let tEnd = range;
+  // 墙：沿水平投影逐格走，进入实心格时看子弹高度是否低于墙顶
+  let tx = tileOf(ox), ty = tileOf(oy);
+  const sx = hx > 0 ? 1 : -1, sy = hy > 0 ? 1 : -1;
+  const ddx = hx !== 0 ? Math.abs(TILE / hx) : Infinity, ddy = hy !== 0 ? Math.abs(TILE / hy) : Infinity;
+  let mx = hx > 0 ? ((tx + 1) * TILE - ox) / hx : hx < 0 ? (tx * TILE - ox) / hx : Infinity;
+  let my = hy > 0 ? ((ty + 1) * TILE - oy) / hy : hy < 0 ? (ty * TILE - oy) / hy : Infinity;
+  for (let i = 0; i < 400; i++) {
+    let hd;
+    if (mx < my) { hd = mx; mx += ddx; tx += sx; } else { hd = my; my += ddy; ty += sy; }
+    const t = hd / cp;
+    if (t >= tEnd) break;
+    if (!solidAt(tx, ty)) continue;
+    const top = tx < 0 || ty < 0 || tx >= MW || ty >= MH ? Infinity : wallH[ty * MW + tx];
+    const z = oz + dz * t;
+    if (z <= top) { tEnd = t; break; }
+    if (dz < 0) {
+      const tTop = (top - oz) / dz, tExit = Math.min(mx, my) / cp;
+      if (tTop < tExit && tTop < tEnd) { tEnd = tTop; break; }
+    }
+  }
+  if (dz < 0) tEnd = Math.min(tEnd, -oz / dz);
+  // 人：先粗筛水平距离，再分别算头和身体
+  const br = VIEW3D.BODY_R / S, bt = VIEW3D.BODY_TOP / S, hc = VIEW3D.HEAD_Y / S, hr = VIEW3D.HEAD_R / S;
+  let best = null, bestT = tEnd, head = false;
+  for (const b of G.agents) {
+    if (!b.alive || b.team === a.team) continue;
+    const px = b.x - ox, py = b.y - oy;
+    if (px * hx + py * hy < -br || Math.abs(px * hy - py * hx) > br) continue;
+    const th = raySphere(ox, oy, oz, dx, dy, dz, b.x, b.y, hc, hr);
+    if (th >= 0 && th < bestT) { best = b; bestT = th; head = true; }
+    const tb = rayCylinder(ox, oy, oz, dx, dy, dz, b.x, b.y, br, bt);
+    if (tb >= 0 && tb < bestT) { best = b; bestT = tb; head = false; }
+  }
+  return { hit: best, head, x: ox + dx * bestT, y: oy + dy * bestT, h: oz + dz * bestT };
+}
+
 /* 伤害：爆头打头盔，其他打护甲；子弹等级决定对护甲的破甲倍率；护甲打光后剩余伤害扣血 */
 function applyDamage(v, raw, head, mult) {
   const pool = head ? 'helmet' : 'armor';
@@ -481,16 +558,17 @@ function applyDamage(v, raw, head, mult) {
   v.hp -= hpLoss;
   return hpLoss;
 }
-function applyHit(a, v, head, wid) {
+function applyHit(a, v, head, wid, pt) {
   const d = WEAPONS[wid];
   let shown;
   if (d.oneShot) { shown = Math.round(v.hp + v.armor + v.helmet); v.hp = 0; }
   else { shown = d.dmg * (head ? CFG.HEADSHOT_MULT : 1); applyDamage(v, shown, head, AMMO[d.ammo].armorMult); }
   onHurt(v, a);
-  G.fx.push({ type: 'blood', x: v.x, y: v.y, a: Math.atan2(v.y - a.y, v.x - a.x), t: 0, life: 0.3, head });
+  const hitH = pt && pt.h != null ? pt.h : (head ? VIEW3D.HEAD_Y : 1.1) / VIEW3D.S;
+  G.fx.push({ type: 'blood', x: pt ? pt.x : v.x, y: pt ? pt.y : v.y, h: hitH, a: Math.atan2(v.y - a.y, v.x - a.x), t: 0, life: 0.3, head });
   if (a.isPlayer) {
-    G.hitT = G.time; G.hitHead = head;
-    G.floats.push({ x: v.x + rand(-8, 8), y: v.y - R - 8, text: String(Math.round(shown)), head, t: 0, life: 0.85 });
+    G.hitT = G.time; G.hitHead = head; v.markT = G.time;
+    G.floats.push({ x: v.x + rand(-8, 8), y: v.y - R - 8, wx: v.x, wy: v.y, h: hitH + 8, text: String(Math.round(shown)), head, t: 0, life: 0.85 });
     SFX.hit(head);
   }
   if (v.hp <= 0) kill(v, a, wid, head);
@@ -570,7 +648,7 @@ function updateSmokes(dt) {
 }
 function explodeFrag(n) {
   const F = CFG.FRAG;
-  G.fx.push({ type: 'boom', x: n.x, y: n.y, r: F.radius, t: 0, life: 0.6 });
+  G.fx.push({ type: 'boom', x: n.x, y: n.y, h: 10, r: F.radius, t: 0, life: 0.6 });
   SFX.boom(n.x, n.y);
   for (const v of G.agents) {
     if (!v.alive || v.team === n.team) continue;
@@ -580,8 +658,8 @@ function explodeFrag(n) {
     applyDamage(v, raw, false, 1);
     onHurt(v, n.owner);
     if (n.owner.isPlayer) {
-      G.hitT = G.time; G.hitHead = false;
-      G.floats.push({ x: v.x, y: v.y - R - 8, text: String(Math.round(raw)), head: false, t: 0, life: 0.85 });
+      G.hitT = G.time; G.hitHead = false; v.markT = G.time;
+      G.floats.push({ x: v.x, y: v.y - R - 8, wx: v.x, wy: v.y, h: 1.9 / VIEW3D.S, text: String(Math.round(raw)), head: false, t: 0, life: 0.85 });
     }
     if (v.hp <= 0) kill(v, n.owner, 'frag', false);
   }
@@ -630,7 +708,7 @@ function defuseSpike(a) {
 function explodeSpike() {
   const S = G.spike;
   S.state = 'exploded';
-  G.fx.push({ type: 'boom', x: S.x, y: S.y, r: CFG.SPIKE_BLAST, t: 0, life: 1.4, big: true });
+  G.fx.push({ type: 'boom', x: S.x, y: S.y, h: 10, r: CFG.SPIKE_BLAST, t: 0, life: 1.4, big: true });
   SFX.boom(S.x, S.y, true);
   for (const a of G.agents) if (a.alive && dist(a, S) < CFG.SPIKE_BLAST) kill(a, null, 'spike', false);
 }

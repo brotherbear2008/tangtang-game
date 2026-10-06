@@ -9,7 +9,7 @@ function makeAI() { return { sniper: false }; }
 
 function resetAI(b) {
   Object.assign(b.ai, {
-    target: null, reactT: 0, err: { x: 0, y: 0 }, lastSeen: null,
+    target: null, reactT: 0, err: { x: 0, y: 0, h: 0 }, lastSeen: null, aimLat: undefined, aimH: 1.2, aimT: 0,
     path: [], pi: 0, pathGoal: null, repathT: 0,
     goal: null, mode: 'move', look: null, lookAt: null, lookAtT: 0,
     route: weightedRoute(), routeIdx: 0,
@@ -56,29 +56,18 @@ function bestWeaponIdx(b) {
   b.weapons.forEach((w, i) => {
     if (w.mag + w.reserve <= 0) return;
     let s = BOT_TIER[w.id] ?? 0;
-    if (b.ai.sniper && WEAPONS[w.id].sniper) s += 3;
+    if (WEAPONS[w.id].sniper) s += b.ai.sniper ? 3 : -4;   // 狙击位优先用狙，其他人把狙当备用
     if (s > bs) { bs = s; bi = i; }
   });
   return bi;
 }
 
-/* 购买：先买主武器（留点钱买甲），再买护甲、头盔、投掷物 */
+/* 购买：先买自己想要的那套，钱还够就再补一套护甲最好的（拿更高级的头甲） */
 function botBuy(b) {
+  const prefs = b.ai.sniper ? ['k5', 'k3', 'k4', 'k2', 'k1'] : ['k4', 'k2', 'k1', 'k5', 'k3'];
+  for (const id of prefs) if (buy(b, 'kit', id)) break;
   const st = stageOf(b.xp);
-  if (!b.weapons.some(w => w.id !== 'classic')) {
-    const prefs = b.ai.sniper
-      ? ['awm', 'm7', 'svd', 'bison', 'ump45', 'm249', 'g18', 'uzi']
-      : ['m7', 'bison', 'ump45', 'm249', 'g18', 'uzi'];
-    const keep = b.money >= 5000 ? 1800 : b.money >= 3000 ? 1000 : 0;
-    let got = false;
-    for (const id of prefs) {
-      const d = WEAPONS[id];
-      if (d.stage <= st && d.price <= b.money - keep && buy(b, 'weapon', id)) { got = true; break; }
-    }
-    if (!got) for (const id of prefs) if (buy(b, 'weapon', id)) break;
-  }
-  for (const it of ARMORS.slice().reverse()) if (buy(b, 'armor', it.id)) break;
-  for (const it of HELMETS.slice().reverse()) if (buy(b, 'helmet', it.id)) break;
+  if (st > 0 && b.money >= 1600) buy(b, 'kit', KITS[st - 1].id);
   if (Math.random() < 0.55) buy(b, 'frag');
   if (Math.random() < 0.35) buy(b, 'smoke');
   b.cur = bestWeaponIdx(b); b.switchT = 0;
@@ -94,6 +83,7 @@ function botUpdate(b, dt) {
   if (b.action && botAction(b, dt)) return;
   if (ai.target && ai.target.alive) { combat(b, dt); return; }
   ai.target = null;
+  b.pitch *= Math.exp(-dt * 6);
   if (b.reloadT <= 0 && b.switchT <= 0) {
     const bi = bestWeaponIdx(b);
     if (bi !== b.cur) switchWeapon(b, bi);
@@ -123,12 +113,12 @@ function perceive(b) {
   if (best) {
     if (best !== ai.target) {
       const behind = Math.abs(wrapA(Math.atan2(best.y - b.y, best.x - b.x) - b.angle)) > 1.2;
-      // 站定架点的人有预瞄优势：反应更快、首发更准
-      const holding = ai.mode === 'hold' && b.speedNow === 0 && !behind;
+      // 站定架点的人有预瞄优势：反应更快、首发更准。3D 的命中框更小，这个加成会被放大，所以只在 2D 里给
+      const holding = G.mode !== '3d' && ai.mode === 'hold' && b.speedNow === 0 && !behind;
       ai.target = best;
       ai.reactT = D.reaction * rand(0.8, 1.3) * (holding ? 0.9 : 1) + (behind ? 0.12 : 0);
       const a = Math.random() * TAU, m = D.errStart * rand(0.7, 1.2) * (holding ? 0.75 : 1);
-      ai.err = { x: Math.cos(a) * m, y: Math.sin(a) * m };
+      ai.err = { x: Math.cos(a) * m, y: Math.sin(a) * m, h: gauss() * m * 0.7 };
       rollAimSpot(ai);
     }
     ai.lastSeen = { x: best.x, y: best.y, t: G.time };
@@ -138,9 +128,15 @@ function perceive(b) {
   }
 }
 
-/* 瞄哪儿：按难度概率瞄头（中心），否则瞄身体侧边 */
+/* 瞄哪儿：按难度概率瞄头，否则瞄身体（2D 瞄身体侧边，3D 瞄胸口高度） */
 function rollAimSpot(ai) {
-  ai.aimLat = Math.random() < G.diffCfg.headAim ? 0 : (Math.random() < 0.5 ? -1 : 1) * R * rand(0.6, 0.9);
+  const head = Math.random() < G.diffCfg.headAim;
+  if (G.mode === '3d') {
+    ai.aimLat = head ? 0 : rand(-0.5, 0.5) * VIEW3D.BODY_R / VIEW3D.S;
+    ai.aimH = head ? VIEW3D.HEAD_Y : rand(0.95, 1.3);
+  } else {
+    ai.aimLat = head ? 0 : (Math.random() < 0.5 ? -1 : 1) * R * rand(0.6, 0.9);
+  }
   ai.aimT = rand(0.5, 1.1);
 }
 
@@ -174,7 +170,7 @@ function combat(b, dt) {
     else { const bi = bestWeaponIdx(b); if (bi !== b.cur) switchWeapon(b, bi); }
   }
   const k = Math.exp(-D.errDecay * dt);
-  ai.err.x *= k; ai.err.y *= k;
+  ai.err.x *= k; ai.err.y *= k; ai.err.h = (ai.err.h || 0) * k;
   ai.aimT -= dt;
   if (ai.aimLat === undefined || ai.aimT <= 0) rollAimSpot(ai);
   // 瞄点相对射线横向偏移（沿射线方向的偏移不改变弹道）
@@ -183,6 +179,7 @@ function combat(b, dt) {
   b.angle = turnToward(b.angle, want, D.turn * dt);
   ai.reactT -= dt;
   const dd = Math.hypot(t.x - b.x, t.y - b.y);
+  if (G.mode === '3d') b.pitch = Math.atan2(ai.aimH - VIEW3D.EYE + ai.err.h * VIEW3D.S, Math.max(dd, 1) * VIEW3D.S);
 
   if (d.sniper) { b.scoped = true; b.speedNow = 0; }
   else {
@@ -198,12 +195,13 @@ function combat(b, dt) {
   }
 
   const aimed = Math.abs(wrapA(b.angle - want)) < 0.09;
-  const steady = !d.sniper || Math.hypot(ai.err.x, ai.err.y) < R * 0.8;
+  const steady = !d.sniper || Math.hypot(ai.err.x, ai.err.y, ai.err.h) < R * 0.8;
   if (ai.reactT <= 0 && aimed && steady && dd <= d.range && w.mag > 0 && (d.auto || ai.tapT <= 0)) {
-    const save = b.angle;
+    const save = b.angle, saveP = b.pitch;
     b.angle += gauss() * D.errFloor / Math.max(dd, 60);
+    b.pitch += gauss() * D.errFloor / Math.max(dd, 60);
     if (fire(b) && !d.auto) ai.tapT = 60 / d.rpm + rand(0.04, 0.16) * (d.sniper ? 2.5 : 1);
-    b.angle = save;
+    b.angle = save; b.pitch = saveP;
   }
 
   if (ai.nadeCD <= 0) {

@@ -17,6 +17,7 @@ function resize() {
   CW = cv.clientWidth || window.innerWidth; CH = cv.clientHeight || window.innerHeight;
   cv.width = Math.round(CW * DPR); cv.height = Math.round(CH * DPR);
   fogC.width = cv.width; fogC.height = cv.height;
+  if (typeof resize3d === 'function') resize3d();
 }
 window.addEventListener('resize', resize);
 
@@ -25,6 +26,7 @@ function screenToWorld(sx, sy) { return { x: (sx - CW / 2) / CAM.s + CAM.x, y: (
 function worldToScreen(x, y) { return { x: (x - CAM.x) * CAM.s + CW / 2, y: (y - CAM.y) * CAM.s + CH / 2 }; }
 
 function updateCamera(dt) {
+  if (G.mode === '3d' && T3) return updateCamera3d(dt);
   if (G.state !== 'game') {
     const t = performance.now() / 1000;
     CAM.s = Math.max(CW / (MW * TILE), CH / (MH * TILE)) * 1.08;
@@ -142,7 +144,7 @@ function drawMapLayer(c, { labels = true, detail = true, t = 0 } = {}) {
   }
   // 墙体阴影
   c.fillStyle = 'rgba(0,0,0,0.38)';
-  WALL_GROUPS.forEach(g => g.rects.forEach(r => { if (r.shape) return; const [x, y, w, h] = rectOf(r); c.fillRect(x * TILE + 5, y * TILE + 7, w * TILE, h * TILE); }));
+  WALL_GROUPS.forEach(g => g.rects.forEach(r => { if (r.shape === 'round' || r.shape === 'rocket') return; const [x, y, w, h] = rectOf(r); c.fillRect(x * TILE + 5, y * TILE + 7, w * TILE, h * TILE); }));
   // 地图边界
   c.fillStyle = PALETTE.border;
   c.fillRect(0, 0, W, TILE); c.fillRect(0, H - TILE, W, TILE); c.fillRect(0, 0, TILE, H); c.fillRect(W - TILE, 0, TILE, H);
@@ -580,10 +582,17 @@ function drawWeaponPanel() {
 }
 
 function drawCrosshair() {
-  const p = G.player, mx = Input.mx, my = Input.my;
-  const mw = screenToWorld(mx, my);
-  const dd = Math.hypot(mw.x - p.x, mw.y - p.y);
-  const gap = clamp(Math.tan(spreadOf(p) * Math.PI / 360) * dd * CAM.s, 3, 70);
+  const p = G.player;
+  let mx, my, gap;
+  if (G.mode === '3d') {
+    // 3D：准星固定在屏幕中心，张开程度 = 散布角换算到当前视野
+    mx = CW / 2; my = CH / 2;
+    gap = clamp(Math.tan(spreadOf(p) * Math.PI / 360) / Math.tan(T3.camera.fov * Math.PI / 360) * CH / 2, 3, 70);
+  } else {
+    mx = Input.mx; my = Input.my;
+    const mw = screenToWorld(mx, my);
+    gap = clamp(Math.tan(spreadOf(p) * Math.PI / 360) * Math.hypot(mw.x - p.x, mw.y - p.y) * CAM.s, 3, 70);
+  }
   const len = 7;
   const lines = [[0, -1], [0, 1], [-1, 0], [1, 0]];
   for (const pass of [0, 1]) {
@@ -593,7 +602,7 @@ function drawCrosshair() {
     for (const [lx, ly] of lines) { ctx.moveTo(mx + lx * gap, my + ly * gap); ctx.lineTo(mx + lx * (gap + len), my + ly * (gap + len)); }
     ctx.stroke();
   }
-  if (canHeadshot(p)) { ctx.fillStyle = PALETTE.spike; ctx.fillRect(mx - 1.5, my - 1.5, 3, 3); }
+  if (G.mode !== '3d' && canHeadshot(p)) { ctx.fillStyle = PALETTE.spike; ctx.fillRect(mx - 1.5, my - 1.5, 3, 3); }
   else { ctx.fillStyle = 'rgba(235,252,255,0.95)'; ctx.fillRect(mx - 1, my - 1, 2, 2); }
   const ht = G.time - G.hitT;
   if (ht < 0.18) {
@@ -604,11 +613,13 @@ function drawCrosshair() {
   }
 }
 function drawHurt() {
-  const p = G.player, s = worldToScreen(p.x, p.y);
+  const p = G.player, is3d = G.mode === '3d';
+  const s = is3d ? { x: CW / 2, y: CH / 2 } : worldToScreen(p.x, p.y);
   for (const h of G.hurt) {
-    const k = (G.time - h.t), a = Math.atan2(h.y - p.y, h.x - p.x);
+    // 3D 里以屏幕上方为正前方，所以要减去自己的朝向
+    const k = (G.time - h.t), a = Math.atan2(h.y - p.y, h.x - p.x) - (is3d ? p.angle + Math.PI / 2 : 0);
     ctx.strokeStyle = `rgba(255,60,50,${0.8 * (1 - k)})`; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.arc(s.x, s.y, 60, a - 0.35, a + 0.35); ctx.stroke();
+    ctx.beginPath(); ctx.arc(s.x, s.y, is3d ? 110 : 60, a - 0.35, a + 0.35); ctx.stroke();
   }
   if (G.time - p.hurtT < 0.3) {
     const g = ctx.createRadialGradient(CW / 2, CH / 2, Math.min(CW, CH) * 0.3, CW / 2, CH / 2, Math.max(CW, CH) * 0.7);
@@ -685,7 +696,7 @@ function drawScopeVignette() {
 
 function drawHUD() {
   const p = G.player;
-  if (p.alive && p.scoped) drawScopeVignette();
+  if (p.alive && p.scoped) { if (G.mode === '3d') drawScope3d(); else drawScopeVignette(); }
   drawMinimap(20, 20);
   drawTopBar();
   drawFeed();
@@ -694,11 +705,23 @@ function drawHUD() {
   if (G.phase === 'buy') drawBuyHint();
   drawBanner();
   drawNotice();
-  if (p.alive && !G.paused && !shopOpen) drawCrosshair();
+  if (G.mode === '3d') drawLockHint();
+  if (p.alive && !G.paused && !shopOpen && !(G.mode === '3d' && p.scoped)) drawCrosshair();
 }
 
 function render() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (G.mode === '3d' && T3) {
+    // 3D：世界画在下面的 WebGL 画布上，这块画布只画 HUD
+    render3d();
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    if (G.state !== 'game' || !G.player) return;
+    computeVisible(viewer());
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    drawOverlays3d();
+    drawHUD();
+    return;
+  }
   ctx.fillStyle = PALETTE.void; ctx.fillRect(0, 0, cv.width, cv.height);
   worldXf(ctx);
   const t = performance.now() / 1000;

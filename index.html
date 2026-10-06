@@ -34,8 +34,11 @@ body {
   font: 14px/1.6 var(--f-ui); overflow: hidden;
   -webkit-font-smoothing: antialiased;
 }
-#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#view3d, #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#view3d { display: none; }
+body.mode3d #view3d { display: block; }
 body.playing #game { cursor: none; }
+body.playing.mode3d.lockfree #game { cursor: crosshair; }
 button { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--spike); outline-offset: 2px; }
 
@@ -97,6 +100,10 @@ kbd {
 .seg button:hover { color: var(--fg); }
 .seg button[aria-pressed="true"] { background: var(--fg); color: var(--void); }
 .actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.range { display: flex; align-items: center; gap: 12px; }
+.range input { flex: 1; min-width: 0; accent-color: var(--spike); }
+.range output { min-width: 2.4em; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.mode-note { margin: 0; color: var(--warn); font-size: 13px; }
 .primary {
   padding: 16px 36px; border: 0; cursor: pointer;
   background: var(--spike); color: #1d1503; font-weight: 700; font-size: 18px; letter-spacing: 0.08em;
@@ -155,10 +162,11 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
 #shopTimer { color: var(--ally); font-weight: 600; }
 #shopClose { margin-left: auto; padding: 6px 12px; background: none; border: 1px solid var(--line-strong); color: var(--muted); cursor: pointer; }
 #shopClose:hover { color: var(--fg); border-color: var(--fg); }
-.shop-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; }
-@media (max-width: 760px) { .shop-grid { grid-template-columns: minmax(0, 1fr); } }
+.shop-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .shop-col h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.14em; color: var(--muted); }
-.shop-col h3 + .items + h3 { margin-top: 14px; }
+.items.kits { grid-template-columns: repeat(auto-fill, minmax(min(100%, 186px), 1fr)); }
+#shopUtil { max-width: 520px; }
+.item-meta b { color: var(--fg); font-weight: 700; }
 .items { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 170px), 1fr)); gap: 6px; }
 .items.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .item {
@@ -208,6 +216,7 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 
+<canvas id="view3d" aria-hidden="true"></canvas>
 <canvas id="game" aria-label="游戏画面"></canvas>
 
 <div id="menu" class="overlay">
@@ -215,7 +224,7 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
     <section class="brief" aria-labelledby="gameTitle">
       <div class="eyebrow">自制射击游戏 · 12V12 爆破模式</div>
       <h1 id="gameTitle">航天基地<br><span class="hl">爆破战</span></h1>
-      <p class="lede">进攻方把炸弹送进 <b>H4 黑室（A 包点）</b>安放，防守方阻止安放或在引爆前拆除。每局 45 秒，<b>9 局 5 胜</b>。</p>
+      <p class="lede">进攻方把炸弹送进 <b>H4 黑室（A 包点）</b>安放，防守方阻止安放或在引爆前拆除。每局 45 秒，<b>9 局 5 胜</b>。可以用 3D 第一人称玩，也可以切回 2D 俯视。</p>
 
       <div class="xpcard cut">
         <div class="xpcard-head">
@@ -226,6 +235,16 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
       </div>
 
       <div class="opts">
+        <div class="opt"><span>画面</span>
+          <div class="seg" id="optMode" role="group" aria-label="画面">
+            <button type="button" data-v="3d" aria-pressed="true">3D 第一人称</button>
+            <button type="button" data-v="2d" aria-pressed="false">2D 俯视</button>
+          </div>
+        </div>
+        <p class="mode-note" id="mode3dNote" hidden>3D 画面需要联网加载 Three.js，并且浏览器要支持 WebGL。现在先用 2D 玩。</p>
+        <div class="opt" id="sensRow"><span>鼠标灵敏度</span>
+          <div class="range"><input type="range" id="optSens" min="0.3" max="3" step="0.1" value="1" aria-label="鼠标灵敏度"><output id="sensVal" for="optSens">1.0</output></div>
+        </div>
         <div class="opt"><span>你的阵营</span>
           <div class="seg" id="optSide" role="group" aria-label="阵营">
             <button type="button" data-v="ATT" aria-pressed="true">进攻方</button>
@@ -259,26 +278,26 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
       <div class="tab" data-tab="controls">
         <dl class="keys">
           <div><dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>移动</dd></div>
-          <div><dt><kbd>鼠标</kbd></dt><dd>瞄准，左键射击</dd></div>
+          <div><dt><kbd>鼠标</kbd></dt><dd>瞄准，左键射击（3D 先点一下画面锁定鼠标）</dd></div>
           <div><dt><kbd>右键</kbd></dt><dd>狙击枪开镜</dd></div>
           <div><dt><kbd>Shift</kbd></dt><dd>静步：慢但更准</dd></div>
           <div><dt><kbd>R</kbd></dt><dd>换弹</dd></div>
           <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>切换背包里的武器</dd></div>
           <div><dt><kbd>Q</kbd></dt><dd>切回上一把</dd></div>
           <div><dt><kbd>E</kbd></dt><dd>按住：安放 / 拆除炸弹</dd></div>
-          <div><dt><kbd>G</kbd></dt><dd>朝准星扔手雷</dd></div>
+          <div><dt><kbd>G</kbd></dt><dd>朝准星扔手雷（3D 抬头扔得更远）</dd></div>
           <div><dt><kbd>C</kbd></dt><dd>朝准星扔烟雾弹</dd></div>
           <div><dt><kbd>B</kbd></dt><dd>购买阶段打开商店</dd></div>
           <div><dt><kbd>X</kbd></dt><dd>丢下炸弹给队友</dd></div>
           <div><dt><kbd>Tab</kbd></dt><dd>按住看计分板</dd></div>
-          <div><dt><kbd>Esc</kbd></dt><dd>暂停</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>暂停（3D 会解除鼠标锁定）</dd></div>
           <div><dt><kbd>M</kbd></dt><dd>静音</dd></div>
           <div><dt><kbd>空格</kbd></dt><dd>阵亡后切换观战队友</dd></div>
         </dl>
         <h3>上手提示</h3>
         <ul>
-          <li>敌人只有在你视线里才会显示，墙后面是暗的。</li>
-          <li>人物中间深色的小圆是头。准星中心变黄时（站定或静步、没在连射）打中它就是爆头，伤害翻倍。</li>
+          <li>3D：直接瞄头就是爆头，伤害翻倍。掩体 2.2 米高，站着也看不过去。3D 里商店不会自动弹出，购买阶段按 B 打开。</li>
+          <li>2D：敌人只有在你视线里才会显示，墙后面是暗的。人物中间深色的小圆是头，准星中心变黄时（站定或静步、没在连射）打中它就是爆头。</li>
           <li>站定点射最准，跑动和连射都会让准星张开。</li>
           <li>击杀敌人后，他背包里的武器会掉在地上，走过去自动缴获。</li>
           <li>经验永久保存在这个浏览器里，打得越多解锁越多。</li>
@@ -302,31 +321,40 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
         <ul>
           <li><span class="tag mod">改</span>金钱跨局累积：首局 800，胜 +3000，负 +1900，击杀 +200，安放 / 拆除 +300，上限 9000。原规则每局重置 800，连最便宜的 1500 护甲都买不起。</li>
           <li><span class="tag mod">改</span>经验永久保存：胜 +800，负 +380，击杀 +100，安放 / 拆除 +100。原来胜一局 +4000，打两局全部解锁，阶段门槛没有意义。</li>
-          <li><span class="tag mod">改</span>给所有武器补上了售价（原规则只有护甲有价格）。</li>
-          <li>护甲、头盔每局清零，需要重买。活下来的人保留背包武器和没用的投掷物，阵亡者只剩 Classic。</li>
+          <li><span class="tag mod">改</span>商店改成<b>按套装买</b>：经验达标后整套购买（枪 + 同级头盔 + 同级护甲），每套 1000。绿色套装 1800 经验（UZI）、蓝色套装 2000（M249）、紫色套装 2500（SVD）、4 级套装 2700（野牛）、金色套装 5000（G18 + AWM）。UMP45 和 M7 已删除；手雷、烟雾弹照常单买。</li>
+          <li>护甲、头盔每局清零，需要重新买套装（已经有的枪会补满弹药）。活下来的人保留背包武器和没用的投掷物，阵亡者只剩 Classic。</li>
         </ul>
         <h3>三、战斗</h3>
         <ul>
-          <li><span class="tag new">新</span><b>爆头</b>：子弹穿过人物中心的头部圆，并且开枪时准星是收拢的（站着或静步、没在连射扩散），算爆头，伤害 ×2。准星中心变黄就是可以爆头。头盔只挡爆头，护甲只挡身体。</li>
+          <li><span class="tag new">新</span><b>爆头</b>：伤害 ×2，头盔只挡爆头，护甲只挡身体。3D 里头就是头，打中就算；2D 俯视里要子弹穿过人物中心的头部圆，并且开枪时准星收拢（准星中心变黄）。</li>
           <li><span class="tag mod">改</span><b>子弹等级</b>原来没有实际作用，现在是破甲系数：打在护甲上时，普通弹 ×0.75、三级弹 ×1.0、四级弹 ×1.5。</li>
           <li><span class="tag new">新</span><b>移速</b>：基础 215，按武器重量 78%–100%；Shift 静步 ×0.5；狙击开镜 ×0.6。</li>
           <li><span class="tag new">新</span><b>换弹</b>：弹药拆成弹匣 + 备弹，总量不变；R 换弹，打空自动换。</li>
           <li><span class="tag new">新</span><b>散布</b>：跑动、连射都会扩散，站定点射最准；狙击不开镜很不准。</li>
           <li><span class="tag new">新</span><b>手雷</b> 300：1.6 秒引爆，半径 170，最高 110 伤害，被墙挡住。<b>烟雾弹</b> 200：持续 10 秒，挡视线不挡子弹。没有友军伤害。</li>
-          <li><span class="tag mod">改</span><b>平衡</b>：G18 射速 1182 → 600（原来每秒伤害 512，比阶段 4 的 M7 还高）；UZI 200 → 450（原来只比免费的 Classic 强一点）；UMP45 211 → 400、野牛 211 → 380（原来比阶段 2 的 M249 还弱）。</li>
+          <li><span class="tag mod">改</span><b>平衡</b>：G18 射速 1182 → 600（原来每秒伤害 512，比所有枪都高）；UZI 200 → 450（原来只比免费的 Classic 强一点）；野牛 211 → 380（原来比 M249 还弱）。</li>
           <li>AWM 命中直接秒杀，无视任何护甲；开枪后在射速冷却之外再加 1 秒拉栓。</li>
           <li>墙体挡子弹、挡移动。击杀 +250 经验改为 +100（见经验部分）。</li>
+        </ul>
+        <h3>四、3D 第一人称</h3>
+        <ul>
+          <li><span class="tag new">新</span>同一套规则、机器人和经验，换成第一人称来玩；菜单里随时可以切回 2D 俯视。</li>
+          <li>比例：一格 = 1.25 米，基础移速约 6.7 米/秒；墙高 4 米，室内掩体 2.2 米，站着看不过去也打不过去。</li>
+          <li>命中判定：头是半径 0.15 米的球，身体是圆柱，打到头就算爆头。</li>
+          <li>点一下画面锁定鼠标，Esc 暂停。商店不会自动弹出，购买阶段按 B 打开。</li>
+          <li>枪声分左右声道，可以听声辨位。</li>
         </ul>
       </div>
 
       <div class="tab" data-tab="weapons" hidden>
+        <h3>套装（经验达标后整套购买）</h3>
+        <div class="tablewrap"><table id="kitTable"></table></div>
+        <h3>武器数据</h3>
         <div class="tablewrap"><table id="weaponTable"></table></div>
-        <h3>护甲与头盔</h3>
-        <div class="tablewrap"><table id="gearTable"></table></div>
         <h3>伤害怎么算</h3>
         <ul>
           <li>身体中弹先扣护甲，爆头先扣头盔。对护甲的伤害 = 伤害 × 破甲系数，护甲打光后剩下的伤害扣血。</li>
-          <li>例：M7（四级弹）打满金色护甲的敌人：第一枪 71×1.5 = 106 打穿 60 护甲，剩余折算 31 扣血；两枪身体或一枪爆头就能击杀。</li>
+          <li>例：SVD（四级弹，伤害 96）打满金色护甲的敌人：第一枪 96 × 1.5 = 144 打穿 60 护甲，剩余折算 56 扣血；两枪身体或一枪爆头就能击杀。</li>
         </ul>
       </div>
 
@@ -365,12 +393,10 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
     </div>
     <div class="shop-grid">
       <div class="shop-col">
-        <h3>武器</h3>
-        <div class="items" id="shopWeapons"></div>
+        <h3>套装 · 枪 + 同级头盔 + 同级护甲，一套 1000</h3>
+        <div class="items kits" id="shopKits"></div>
       </div>
       <div class="shop-col">
-        <h3>护甲 · 头盔</h3>
-        <div class="items two" id="shopArmor"></div>
         <h3>投掷物</h3>
         <div class="items two" id="shopUtil"></div>
       </div>
@@ -406,8 +432,10 @@ td.note { color: var(--spike); font-size: 12px; white-space: normal; min-width: 
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script charset="utf-8" src="js/config.js"></script>
 <script charset="utf-8" src="js/engine.js"></script>
 <script charset="utf-8" src="js/ai.js"></script>
 <script charset="utf-8" src="js/render.js"></script>
+<script charset="utf-8" src="js/view3d.js"></script>
 <script charset="utf-8" src="js/main.js"></script>
